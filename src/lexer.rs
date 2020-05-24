@@ -3,6 +3,7 @@ use nom::bytes::complete::{tag, take_while};
 use nom::character::complete::{alpha1, char, space0};
 use nom::combinator::{map, recognize};
 use nom::multi::many0;
+use nom::number::complete::double;
 use nom::sequence::{pair, preceded, terminated};
 use nom::{AsChar, IResult};
 
@@ -47,6 +48,97 @@ fn ident(input: &str) -> Result<Token> {
     let rest = take_while(|c: char| c.is_alphanum() || c == '_');
     map(recognize(pair(first, rest)), Token::Ident)(input)
 }
+
+// string::parse {{{
+mod string {
+    use super::*;
+    use nom::bytes::complete::{is_not, take_while_m_n};
+    use nom::character::complete::multispace1;
+    use nom::combinator::{map_opt, map_res, verify};
+    use nom::sequence::delimited;
+
+    #[inline]
+    fn unicode(input: &str) -> Result<char> {
+        let hex = take_while_m_n(1, 6, |c: char| c.is_ascii_hexdigit());
+
+        let delimited_hex = preceded(char('u'), delimited(char('{'), hex, char('}')));
+
+        map_opt(
+            map_res(delimited_hex, |hex| u32::from_str_radix(hex, 16)),
+            std::char::from_u32,
+        )(input)
+    }
+
+    #[inline]
+    fn escaped_char(input: &str) -> Result<char> {
+        preceded(
+            char('\\'),
+            alt((
+                unicode,
+                map_val!(char('\n'), '\n'),
+                map_val!(char('\r'), '\r'),
+                map_val!(char('\t'), '\t'),
+                map_val!(char('b'), '\u{08}'),
+                map_val!(char('f'), '\u{0C}'),
+                map_val!(char('\\'), '\\'),
+                map_val!(char('/'), '/'),
+                map_val!(char('"'), '"'),
+            )),
+        )(input)
+    }
+
+    #[inline]
+    fn escaped_ws(input: &str) -> Result<&str> {
+        preceded(char('\\'), multispace1)(input)
+    }
+
+    #[inline]
+    fn literal(input: &str) -> Result<&str> {
+        let not_quote_slash = is_not("\"\\");
+        verify(not_quote_slash, |s: &str| !s.is_empty())(input)
+    }
+
+    #[inline]
+    fn fragment(input: &str) -> Result<()> {
+        alt((
+            map_val!(literal, ()),
+            map_val!(escaped_char, ()),
+            map_val!(escaped_ws, ()),
+        ))(input)
+    }
+
+    pub fn parse(input: &str) -> Result<&str> {
+        let build_string = recognize(many0(fragment));
+        delimited(char('"'), build_string, char('"'))(input)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::parse;
+
+        #[test]
+        fn simple() {
+            let result = parse(r#""foo""#);
+            let expected = Ok(("", "foo"));
+            assert_eq!(expected, result);
+
+            let result = parse(r#""foo bar""#);
+            let expected = Ok(("", "foo bar"));
+            assert_eq!(expected, result);
+
+            let result = parse("foo").is_err();
+            assert!(result);
+        }
+
+        #[test]
+        fn escaped() {
+            let (input, s) = parse("\"foo\\\"\"").unwrap();
+            assert_eq!(s, "foo\\\"");
+            assert_eq!(input, "");
+        }
+    }
+}
+// }}}
 
 #[inline]
 fn operations(input: &str) -> Result<Token> {
@@ -94,8 +186,19 @@ fn punctations(input: &str) -> Result<Token> {
 }
 
 #[inline]
+fn literal(input: &str) -> Result<Token> {
+    alt((
+        map(string::parse, Token::String),
+        map(double, Token::Number),
+        map_val!(tag("true"), Token::Boolean(true)),
+        map_val!(tag("false"), Token::Boolean(false)),
+        map_val!(tag("null"), Token::Null),
+    ))(input)
+}
+
+#[inline]
 fn token(input: &str) -> Result<Token> {
-    alt((keyword, ident, punctations, operations))(input)
+    alt((keyword, ident, literal, punctations, operations))(input)
 }
 
 pub fn parse(input: &str) -> Result<Vec<Token>> {
@@ -133,6 +236,25 @@ mod tests {
         assert_eq!(input, "");
 
         let (input, tokens) = parse(r#"(.)"#).unwrap();
+
+        assert_eq!(tokens, expected);
+        assert_eq!(input, "");
+
+        let (input, tokens) = parse(r#"(."foo")"#).unwrap();
+        let expected = vec![OpenParen, Dot, String("foo"), CloseParen];
+
+        assert_eq!(tokens, expected);
+        assert_eq!(input, "");
+
+        let (input, tokens) = parse(".[1:-2]").unwrap();
+        let expected = vec![
+            Dot,
+            OpenBracket,
+            Number(1.0),
+            Colon,
+            Number(-2.0),
+            CloseBracket,
+        ];
 
         assert_eq!(tokens, expected);
         assert_eq!(input, "");

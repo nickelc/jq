@@ -2,8 +2,9 @@
 pub enum Token<'a> {
     Ident(&'a str),
     String(&'a str),
-    Integer(i64),
+    Number(f64),
     Boolean(bool),
+    Null,
     // Keywords
     __Loc__,
     As,
