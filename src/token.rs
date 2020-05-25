@@ -67,6 +67,16 @@ pub struct Tokens<'a> {
     end: usize,
 }
 
+impl<'a> Tokens<'a> {
+    pub fn new(tokens: &'a [Token<'a>]) -> Self {
+        Self {
+            tokens,
+            start: 0,
+            end: tokens.len(),
+        }
+    }
+}
+
 use std::ops::Index;
 
 impl<'a> Index<usize> for Tokens<'a> {
