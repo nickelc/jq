@@ -2,12 +2,12 @@ use std::ops::RangeFrom;
 
 use nom::branch::alt;
 use nom::bytes::complete::take;
-use nom::combinator::{map, opt};
-use nom::multi::many0;
+use nom::combinator::{map, not, opt, peek};
+use nom::multi::{many0, separated_list1};
 use nom::sequence::{delimited, pair, preceded, terminated};
 use nom::{error::ErrorKind, Err, IResult};
 
-use crate::ast::{Index, Literal, Number, Suffix, SuffixIndex, Term, TermType};
+use crate::ast::{Comma, Index, Literal, Number, Query, Suffix, SuffixIndex, Term, TermType};
 use crate::token::{Token, Tokens};
 
 pub type Result<'a, O> = IResult<Tokens<'a>, O>;
@@ -123,6 +123,20 @@ fn term(input: Tokens) -> Result<Term> {
         kind,
         suffixes,
     })(input)
+}
+
+fn query(input: Tokens) -> Result<Query> {
+    let terms = terminated(
+        separated_list1(token(Token::Comma), term),
+        not(peek(token(Token::Comma))),
+    );
+    let comma = map(terms, |terms| Comma { terms });
+
+    let commas = terminated(
+        separated_list1(token(Token::Pipe), comma),
+        not(peek(token(Token::Pipe))),
+    );
+    map(commas, |commas| Query { commas })(input)
 }
 
 #[cfg(test)]
@@ -328,6 +342,122 @@ mod tests {
         let (input, result) = term(input).unwrap();
         assert_eq!(expected, result);
         assert_eq!(0, input.input_len());
+    }
+    // }}}
+
+    // test `fn query(i) -> Query` {{{
+    #[test]
+    fn query_pipe_comma() {
+        use crate::ast::Comma as Fork;
+
+        // `.a , .b | .c`
+        let input = [
+            Dot,
+            Ident("a"),
+            Comma,
+            Dot,
+            Ident("b"),
+            Pipe,
+            Dot,
+            Ident("c"),
+        ];
+        let input = Tokens::new(&input);
+
+        let (_, result) = query(input).unwrap();
+        let expected = Query {
+            commas: vec![
+                Fork {
+                    terms: vec![
+                        Term {
+                            kind: TermType::Index(Index::Name("a")),
+                            suffixes: vec![],
+                        },
+                        Term {
+                            kind: TermType::Index(Index::Name("b")),
+                            suffixes: vec![],
+                        },
+                    ],
+                },
+                Fork {
+                    terms: vec![Term {
+                        kind: TermType::Index(Index::Name("c")),
+                        suffixes: vec![],
+                    }],
+                },
+            ],
+        };
+        assert_eq!(expected, result);
+
+        // `.a | .b , .c`
+        let input = [
+            Dot,
+            Ident("a"),
+            Pipe,
+            Dot,
+            Ident("b"),
+            Comma,
+            Dot,
+            Ident("c"),
+        ];
+        let input = Tokens::new(&input);
+
+        let (_, result) = query(input).unwrap();
+        let expected = Query {
+            commas: vec![
+                Fork {
+                    terms: vec![Term {
+                        kind: TermType::Index(Index::Name("a")),
+                        suffixes: vec![],
+                    }],
+                },
+                Fork {
+                    terms: vec![
+                        Term {
+                            kind: TermType::Index(Index::Name("b")),
+                            suffixes: vec![],
+                        },
+                        Term {
+                            kind: TermType::Index(Index::Name("c")),
+                            suffixes: vec![],
+                        },
+                    ],
+                },
+            ],
+        };
+        assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn query_with_trailing_token() {
+        // `.a | .b |`
+        let input = [Dot, Ident("a"), Comma, Dot, Ident("b"), Pipe];
+        let input = Tokens::new(&input);
+
+        let result = query(input);
+
+        assert!(result.is_err());
+        if let Err(Err::Error((rest, _))) = result {
+            assert_eq!(Pipe, rest[0]);
+        }
+
+        // `.a , | .b`
+        let input = [Dot, Ident("a"), Comma, Pipe, Dot, Ident("b")];
+        let input = Tokens::new(&input);
+
+        let result = query(input);
+
+        assert!(result.is_err());
+        if let Err(Err::Error((rest, _))) = result {
+            assert_eq!(Comma, rest[0]);
+        }
+
+        // `.a | .b .`
+        let input = [Dot, Ident("a"), Pipe, Dot, Ident("b"), Dot];
+        let input = Tokens::new(&input);
+
+        let (rest, _) = query(input).unwrap();
+
+        assert_eq!(Dot, rest[0]);
     }
     // }}}
 }
