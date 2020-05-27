@@ -34,7 +34,13 @@ pub struct Array<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Object<'a> {
-    pub fields: Vec<(ObjectKey<'a>, ObjectValue<'a>)>,
+    pub fields: Vec<ObjectKeyValue<'a>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ObjectKeyValue<'a> {
+    KeyValue(ObjectKey<'a>, ObjectValue<'a>),
+    KeyOnly(ObjectKeyOnly<'a>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +48,12 @@ pub enum ObjectKey<'a> {
     Name(&'a str),
     String(&'a str),
     Query(Query<'a>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ObjectKeyOnly<'a> {
+    Name(&'a str),
+    String(&'a str),
 }
 
 #[derive(Debug, Clone, PartialEq)]

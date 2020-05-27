@@ -8,8 +8,8 @@ use nom::sequence::{delimited, pair, preceded, separated_pair, terminated};
 use nom::{error::ErrorKind, Err, IResult};
 
 use crate::ast::{
-    Array, Comma, Index, Literal, Number, Object, ObjectKey, ObjectValue, Query, Suffix,
-    SuffixIndex, Term, TermType,
+    Array, Comma, Index, Literal, Number, Object, ObjectKey, ObjectKeyOnly, ObjectKeyValue,
+    ObjectValue, Query, Suffix, SuffixIndex, Term, TermType,
 };
 use crate::token::{Token, Tokens};
 
@@ -161,6 +161,13 @@ fn object_key(input: Tokens) -> Result<ObjectKey> {
     ))(input)
 }
 
+fn object_key_only(input: Tokens) -> Result<ObjectKeyOnly> {
+    alt((
+        map(ident, ObjectKeyOnly::Name),
+        map(string, ObjectKeyOnly::String),
+    ))(input)
+}
+
 fn object_value(input: Tokens) -> Result<ObjectValue> {
     alt((
         map(preceded(token(Token::Dot), ident), ObjectValue::Name),
@@ -170,9 +177,13 @@ fn object_value(input: Tokens) -> Result<ObjectValue> {
 }
 
 fn object(input: Tokens) -> Result<Object> {
-    let kv = separated_pair(object_key, token(Token::Colon), object_value);
+    let key_value = map(
+        separated_pair(object_key, token(Token::Colon), object_value),
+        |(key, value)| ObjectKeyValue::KeyValue(key, value),
+    );
+    let key_only = map(object_key_only, ObjectKeyValue::KeyOnly);
     let elems = terminated(
-        separated_list1(token(Token::Comma), kv),
+        separated_list1(token(Token::Comma), alt((key_value, key_only))),
         opt(token(Token::Comma)),
     );
     delimited(
@@ -624,8 +635,8 @@ mod tests {
         let (input, result) = object(input).unwrap();
         let expected = Object {
             fields: vec![
-                (ObjectKey::String("a"), ObjectValue::String("b")),
-                (ObjectKey::String("c"), ObjectValue::String("d")),
+                ObjectKeyValue::KeyValue(ObjectKey::String("a"), ObjectValue::String("b")),
+                ObjectKeyValue::KeyValue(ObjectKey::String("c"), ObjectValue::String("d")),
             ],
         };
 
@@ -652,8 +663,32 @@ mod tests {
         let (input, result) = object(input).unwrap();
         let expected = Object {
             fields: vec![
-                (ObjectKey::String("a"), ObjectValue::String("b")),
-                (ObjectKey::String("c"), ObjectValue::String("d")),
+                ObjectKeyValue::KeyValue(ObjectKey::String("a"), ObjectValue::String("b")),
+                ObjectKeyValue::KeyValue(ObjectKey::String("c"), ObjectValue::String("d")),
+            ],
+        };
+
+        assert_eq!(expected, result);
+        assert_eq!(0, input.input_len());
+    }
+
+    #[test]
+    fn object_with_key_only() {
+        let input = [
+            OpenBrace,
+            Ident("a"),
+            Comma,
+            String("b"),
+            Comma,
+            CloseBrace,
+        ];
+        let input = Tokens::new(&input);
+
+        let (input, result) = object(input).unwrap();
+        let expected = Object {
+            fields: vec![
+                ObjectKeyValue::KeyOnly(ObjectKeyOnly::Name("a")),
+                ObjectKeyValue::KeyOnly(ObjectKeyOnly::String("b")),
             ],
         };
 
@@ -688,7 +723,7 @@ mod tests {
         let (input, result) = object(input).unwrap();
         let expected = Object {
             fields: vec![
-                (
+                ObjectKeyValue::KeyValue(
                     ObjectKey::Query(Query {
                         commas: vec![Fork {
                             terms: vec![Term {
@@ -699,7 +734,7 @@ mod tests {
                     }),
                     ObjectValue::Name("a"),
                 ),
-                (ObjectKey::Name("foreach"), ObjectValue::Name("b")),
+                ObjectKeyValue::KeyValue(ObjectKey::Name("foreach"), ObjectValue::Name("b")),
             ],
         };
 
