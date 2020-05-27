@@ -4,10 +4,13 @@ use nom::branch::alt;
 use nom::bytes::complete::take;
 use nom::combinator::{map, not, opt, peek};
 use nom::multi::{many0, separated_list1};
-use nom::sequence::{delimited, pair, preceded, terminated};
+use nom::sequence::{delimited, pair, preceded, separated_pair, terminated};
 use nom::{error::ErrorKind, Err, IResult};
 
-use crate::ast::{Comma, Index, Literal, Number, Query, Suffix, SuffixIndex, Term, TermType};
+use crate::ast::{
+    Array, Comma, Index, Literal, Number, Object, ObjectKey, ObjectValue, Query, Suffix,
+    SuffixIndex, Term, TermType,
+};
 use crate::token::{Token, Tokens};
 
 pub type Result<'a, O> = IResult<Tokens<'a>, O>;
@@ -58,6 +61,33 @@ fn literal(input: Tokens) -> Result<Literal> {
         Token::Null => Ok((i, Literal::Null)),
         _ => Err(Err::Error((i, ErrorKind::Tag))),
     }
+}
+
+fn keyword(input: Tokens) -> Result<&str> {
+    let (i, token) = take(1usize)(input)?;
+    let token = match &token[0] {
+        Token::__Loc__ => "__loc__",
+        Token::As => "as",
+        Token::Break => "break",
+        Token::Catch => "catch",
+        Token::Def => "def",
+        Token::If => "if",
+        Token::Then => "then",
+        Token::Else => "else",
+        Token::ElseIf => "elif",
+        Token::End => "end",
+        Token::And => "and",
+        Token::Or => "or",
+        Token::Foreach => "foreach",
+        Token::Import => "import",
+        Token::Include => "include",
+        Token::Label => "label",
+        Token::Module => "module",
+        Token::Reduce => "reduce",
+        Token::Try => "try",
+        _ => return Err(Err::Error((i, ErrorKind::Tag))),
+    };
+    Ok((i, token))
 }
 
 fn range(input: Tokens) -> Result<(Option<Number>, Option<Number>)> {
@@ -111,12 +141,57 @@ fn suffix(input: Tokens) -> Result<Suffix> {
     ))(input)
 }
 
+fn array(input: Tokens) -> Result<Array> {
+    delimited(
+        token(Token::OpenBracket),
+        map(query, |query| Array { query }),
+        token(Token::CloseBracket),
+    )(input)
+}
+
+fn object_key(input: Tokens) -> Result<ObjectKey> {
+    alt((
+        map(ident, ObjectKey::Name),
+        map(string, ObjectKey::String),
+        map(keyword, ObjectKey::Name),
+        map(
+            delimited(token(Token::OpenParen), query, token(Token::CloseParen)),
+            ObjectKey::Query,
+        ),
+    ))(input)
+}
+
+fn object_value(input: Tokens) -> Result<ObjectValue> {
+    alt((
+        map(preceded(token(Token::Dot), ident), ObjectValue::Name),
+        map(string, ObjectValue::String),
+        map(term, ObjectValue::Term),
+    ))(input)
+}
+
+fn object(input: Tokens) -> Result<Object> {
+    let kv = separated_pair(object_key, token(Token::Colon), object_value);
+    let elems = terminated(
+        separated_list1(token(Token::Comma), kv),
+        opt(token(Token::Comma)),
+    );
+    delimited(
+        token(Token::OpenBrace),
+        map(opt(elems), |fields| Object {
+            fields: fields.unwrap_or_default(),
+        }),
+        token(Token::CloseBrace),
+    )(input)
+}
+
 fn term(input: Tokens) -> Result<Term> {
     let kind = alt((
         map(index, TermType::Index),
         map(token(Token::Dot), |_| TermType::Identity),
         map(token(Token::Recurse), |_| TermType::Recurse),
         map(literal, TermType::Literal),
+        map(array, TermType::Array),
+        map(object, TermType::Object),
     ));
     let suffixes = many0(suffix);
     map(pair(kind, suffixes), |(kind, suffixes)| Term {
@@ -242,6 +317,27 @@ mod tests {
     }
     // }}}
 
+    #[test]
+    fn test_array() {
+        use crate::ast::Comma as Fork;
+
+        let input = [OpenBracket, Dot, Ident("a"), CloseBracket];
+        let input = Tokens::new(&input);
+
+        let expected = Array {
+            query: Query {
+                commas: vec![Fork {
+                    terms: vec![Term {
+                        kind: TermType::Index(Index::Name("a")),
+                        suffixes: vec![],
+                    }],
+                }],
+            },
+        };
+        let (_, result) = array(input).unwrap();
+        assert_eq!(expected, result);
+    }
+
     // test `fn term(i) -> Term` {{{
     #[test]
     fn term_index() {
@@ -279,6 +375,30 @@ mod tests {
         let (input, result) = term(input).unwrap();
         assert_eq!(expected, result);
         assert_eq!(0, input.input_len());
+    }
+
+    #[test]
+    fn term_array() {
+        use crate::ast::Comma as Fork;
+
+        let input = [OpenBracket, Dot, Ident("a"), CloseBracket];
+        let input = Tokens::new(&input);
+
+        let expected = Term {
+            kind: TermType::Array(Array {
+                query: Query {
+                    commas: vec![Fork {
+                        terms: vec![Term {
+                            kind: TermType::Index(Index::Name("a")),
+                            suffixes: vec![],
+                        }],
+                    }],
+                },
+            }),
+            suffixes: vec![],
+        };
+        let (_, result) = term(input).unwrap();
+        assert_eq!(expected, result);
     }
 
     #[test]
@@ -458,6 +578,133 @@ mod tests {
         let (rest, _) = query(input).unwrap();
 
         assert_eq!(Dot, rest[0]);
+    }
+    // }}}
+
+    // test `fn object(i) -> Object` {{{
+    #[test]
+    fn object_empty() {
+        let input = [OpenBrace, CloseBrace];
+        let input = Tokens::new(&input);
+
+        let (input, result) = object(input).unwrap();
+        let expected = Object { fields: vec![] };
+
+        assert_eq!(expected, result);
+        assert_eq!(0, input.input_len());
+    }
+
+    #[test]
+    fn object_comma_only() {
+        let input = [OpenBrace, Comma, CloseBrace];
+        let input = Tokens::new(&input);
+
+        let result = object(input);
+        assert!(result.is_err());
+        if let Err(Err::Error((input, _))) = result {
+            assert_eq!(Comma, input[0]);
+        }
+    }
+
+    #[test]
+    fn object_string_fields() {
+        let input = [
+            OpenBrace,
+            String("a"),
+            Colon,
+            String("b"),
+            Comma,
+            String("c"),
+            Colon,
+            String("d"),
+            CloseBrace,
+        ];
+        let input = Tokens::new(&input);
+
+        let (input, result) = object(input).unwrap();
+        let expected = Object {
+            fields: vec![
+                (ObjectKey::String("a"), ObjectValue::String("b")),
+                (ObjectKey::String("c"), ObjectValue::String("d")),
+            ],
+        };
+
+        assert_eq!(expected, result);
+        assert_eq!(0, input.input_len());
+    }
+
+    #[test]
+    fn object_trailing_comma() {
+        let input = [
+            OpenBrace,
+            String("a"),
+            Colon,
+            String("b"),
+            Comma,
+            String("c"),
+            Colon,
+            String("d"),
+            Comma,
+            CloseBrace,
+        ];
+        let input = Tokens::new(&input);
+
+        let (input, result) = object(input).unwrap();
+        let expected = Object {
+            fields: vec![
+                (ObjectKey::String("a"), ObjectValue::String("b")),
+                (ObjectKey::String("c"), ObjectValue::String("d")),
+            ],
+        };
+
+        assert_eq!(expected, result);
+        assert_eq!(0, input.input_len());
+    }
+
+    #[test]
+    fn object_complex() {
+        use crate::ast::Comma as Fork;
+
+        let input = [
+            OpenBrace,
+            OpenParen,
+            Dot,
+            OpenBracket,
+            CloseBracket,
+            CloseParen,
+            Colon,
+            Dot,
+            Ident("a"),
+            Comma,
+            Foreach,
+            Colon,
+            Dot,
+            Ident("b"),
+            Comma,
+            CloseBrace,
+        ];
+        let input = Tokens::new(&input);
+
+        let (input, result) = object(input).unwrap();
+        let expected = Object {
+            fields: vec![
+                (
+                    ObjectKey::Query(Query {
+                        commas: vec![Fork {
+                            terms: vec![Term {
+                                kind: TermType::Identity,
+                                suffixes: vec![Suffix::Iter],
+                            }],
+                        }],
+                    }),
+                    ObjectValue::Name("a"),
+                ),
+                (ObjectKey::Name("foreach"), ObjectValue::Name("b")),
+            ],
+        };
+
+        assert_eq!(expected, result);
+        assert_eq!(0, input.input_len());
     }
     // }}}
 }

@@ -19,12 +19,36 @@ pub struct Term<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TermType<'a> {
     Index(Index<'a>),
-    Identity, // `.`
-    Recurse,  // `..`
-    // Array,
-    // Object,
+    Identity,             // `.`
+    Recurse,              // `..`
+    Array(Array<'a>),     // `"[" Query "]"`
+    Object(Object<'a>),   // `"{" Object "}"
     Literal(Literal<'a>), // `null | bool | string`
-    Query(Query<'a>),     // `( Query )`
+    Query(Query<'a>),     // `"(" Query ")"`
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Array<'a> {
+    pub query: Query<'a>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Object<'a> {
+    pub fields: Vec<(ObjectKey<'a>, ObjectValue<'a>)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ObjectKey<'a> {
+    Name(&'a str),
+    String(&'a str),
+    Query(Query<'a>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ObjectValue<'a> {
+    Name(&'a str),
+    String(&'a str),
+    Term(Term<'a>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
